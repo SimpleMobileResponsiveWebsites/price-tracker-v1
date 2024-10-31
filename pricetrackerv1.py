@@ -2,34 +2,26 @@ import streamlit as st
 import pandas as pd
 import playwright.async_api
 import asyncio
-import json
 from datetime import datetime
 import plotly.express as px
-import sqlite3
-from pathlib import Path
 
-# Initialize database
-def init_db():
-    conn = sqlite3.connect('price_tracker.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS products
-                 (url TEXT PRIMARY KEY, name TEXT, target_price REAL)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS price_history
-                 (url TEXT, price REAL, timestamp DATETIME,
-                  FOREIGN KEY(url) REFERENCES products(url))''')
-    conn.commit()
-    conn.close()
+# Use Streamlit's secrets management instead of local auth.json
+# Add to .streamlit/secrets.toml:
+# bright_data_username = "your_username"
+# bright_data_password = "your_password"
+
+# Initialize session state for storing data
+if 'products' not in st.session_state:
+    st.session_state.products = pd.DataFrame(columns=['url', 'name', 'target_price'])
+if 'price_history' not in st.session_state:
+    st.session_state.price_history = pd.DataFrame(columns=['url', 'price', 'timestamp'])
 
 # Scraper class
 class AmazonScraper:
-    def __init__(self, auth_path="auth.json"):
-        with open(auth_path) as f:
-            self.auth = json.load(f)
-        
     async def get_price(self, url):
         playwright = await playwright.async_api.async_playwright().start()
         browser = await playwright.chromium.connect_over_cdp(
-            f"wss://{self.auth['username']}:{self.auth['password']}@brd.superproxy.io:9222"
+            f"wss://{st.secrets.bright_data_username}:{st.secrets.bright_data_password}@brd.superproxy.io:9222"
         )
         
         try:
@@ -44,42 +36,28 @@ class AmazonScraper:
             await browser.close()
             await playwright.stop()
 
-# Database operations
+# Data operations
 def add_product(url, name, target_price):
-    conn = sqlite3.connect('price_tracker.db')
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO products VALUES (?, ?, ?)",
-              (url, name, target_price))
-    conn.commit()
-    conn.close()
+    new_product = pd.DataFrame({
+        'url': [url],
+        'name': [name],
+        'target_price': [target_price]
+    })
+    st.session_state.products = pd.concat([st.session_state.products, new_product], ignore_index=True)
 
 def add_price_history(url, price):
-    conn = sqlite3.connect('price_tracker.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO price_history VALUES (?, ?, ?)",
-              (url, price, datetime.now()))
-    conn.commit()
-    conn.close()
-
-def get_all_products():
-    conn = sqlite3.connect('price_tracker.db')
-    df = pd.read_sql_query("SELECT * FROM products", conn)
-    conn.close()
-    return df
+    new_price = pd.DataFrame({
+        'url': [url],
+        'price': [price],
+        'timestamp': [datetime.now()]
+    })
+    st.session_state.price_history = pd.concat([st.session_state.price_history, new_price], ignore_index=True)
 
 def get_price_history(url):
-    conn = sqlite3.connect('price_tracker.db')
-    df = pd.read_sql_query(
-        "SELECT * FROM price_history WHERE url=? ORDER BY timestamp",
-        conn, params=(url,))
-    conn.close()
-    return df
+    return st.session_state.price_history[st.session_state.price_history['url'] == url].sort_values('timestamp')
 
 # Streamlit UI
 st.title("Amazon Price Tracker")
-
-# Initialize database
-init_db()
 
 # Sidebar for adding new products
 with st.sidebar:
@@ -99,10 +77,9 @@ with st.sidebar:
 
 # Main content area
 st.header("Tracked Products")
-products_df = get_all_products()
 
-if not products_df.empty:
-    for _, product in products_df.iterrows():
+if not st.session_state.products.empty:
+    for _, product in st.session_state.products.iterrows():
         st.subheader(product['name'])
         col1, col2 = st.columns(2)
         
@@ -125,14 +102,3 @@ if not products_df.empty:
                 st.plotly_chart(fig)
 else:
     st.info("No products are being tracked. Add a product using the sidebar!")
-
-# Requirements.txt content as a string
-requirements = """
-streamlit==1.31.0
-pandas==2.2.0
-playwright==1.41.0
-plotly==5.18.0
-"""
-
-# Save requirements
-Path("requirements.txt").write_text(requirements)
